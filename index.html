@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents in CI — technical details</title>
+<meta name="description" content="How a CI pipeline with coding agents removes stale feature flags: architecture, guardrails, numbers. FrontKon 2026.">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Work+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0A0623;--panel:#14102C;--line:#2C2750;--ink:#F4F3FF;--soft:#C9C6E4;--muted:#8E89B3;--brand:#7B74FF;--brand2:#5951FF;--ok:#3DD68C;--bad:#FF6B6B;--mono:'JetBrains Mono',ui-monospace,monospace;--sans:'Work Sans',system-ui,sans-serif}
+*{box-sizing:border-box}
+html{scroll-snap-type:y mandatory;scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 18px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+section{min-height:100vh;scroll-snap-align:start;padding:64px max(16px,6vw) 56px;display:flex;flex-direction:column;justify-content:center;border-bottom:1px solid var(--line);max-width:1280px;margin:0 auto}
+.k{font:500 13px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--brand);margin:0 0 18px}
+h1{font:800 clamp(40px,7vw,84px)/1.02 var(--sans);letter-spacing:-.03em;margin:0 0 18px}
+h2{font:700 clamp(28px,4.2vw,48px)/1.1 var(--sans);letter-spacing:-.02em;margin:0 0 28px;max-width:22ch}
+h3{font:700 19px/1.25 var(--sans);margin:0 0 10px}
+p{margin:0 0 14px;color:var(--soft);max-width:68ch}
+b,strong{color:var(--ink);font-weight:600}
+code{font:400 .86em var(--mono);color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap}
+ul{margin:0;padding-left:20px;color:var(--soft)} li{margin:0 0 8px} li::marker{color:var(--brand)}
+.grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+.card.ai{border-color:var(--brand2);box-shadow:0 0 0 1px var(--brand2) inset}
+.tag{display:inline-block;font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:5px 8px;border-radius:4px;margin-bottom:12px;background:#221D45;color:var(--muted)}
+.card.ai .tag{background:var(--brand2);color:#fff}
+.stats{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin:8px 0 26px}
+.stat .n{font:800 clamp(34px,5vw,56px)/1 var(--sans);letter-spacing:-.03em}
+.stat .l{font-size:14px;color:var(--muted);margin-top:6px}
+.brand{color:var(--brand)} .ok{color:var(--ok)} .bad{color:var(--bad)}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;overflow:auto;font:400 14px/1.6 var(--mono);color:var(--soft);margin:0}
+pre .c{color:var(--muted)} pre .h{color:var(--ink)} pre .a{color:var(--brand)}
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:6px 0 26px}
+.flow div{flex:1 1 120px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;font:500 15px/1.3 var(--sans)}
+.flow div small{display:block;font:400 12px/1.4 var(--mono);color:var(--muted);margin-top:6px}
+.flow .ai{border-color:var(--brand2);background:#1D1846}
+table{border-collapse:collapse;width:100%;font-size:16px}
+td,th{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;color:var(--soft)}
+th{font:500 12px/1.2 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+td:first-child{color:var(--ink)}
+.bar{display:grid;grid-template-columns:150px 1fr 60px;gap:12px;align-items:center;font-size:15px;margin:6px 0;color:var(--soft)}
+.bar i{display:block;height:12px;border-radius:3px;background:var(--line)} .bar i.y{background:var(--ok)}
+.foot{font:400 13px/1.5 var(--mono);color:var(--muted);margin-top:24px}
+a{color:var(--brand)}
+.nav{position:fixed;right:16px;bottom:14px;font:500 12px/1 var(--mono);color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
+@media (max-width:640px){body{font-size:16px}section{min-height:auto;padding:48px 16px 40px}html{scroll-snap-type:none}.bar{grid-template-columns:110px 1fr 46px}.nav{display:none}}
+</style>
+</head>
+<body>
+
+<section id="s1">
+  <p class="k">FrontKon 2026 · technical details</p>
+  <h1>Agents in CI</h1>
+  <p style="font-size:21px">A GitHub Actions pipeline that removes fully rolled-out feature flags from a large TypeScript/React monorepo. Deterministic code decides <i>what</i> is safe. A coding agent does the edit. Humans merge.</p>
+  <div class="stats" style="margin-top:22px">
+    <div class="stat"><div class="n">3,274 → 2,846</div><div class="l">flags in LaunchDarkly, Dec 2025 → Oct 2026, while 1,000+ new ones were created</div></div>
+    <div class="stat"><div class="n">386</div><div class="l">flag-removal PRs merged (95% of resolved PRs)</div></div>
+    <div class="stat"><div class="n">~67k</div><div class="l">lines deleted</div></div>
+    <div class="stat"><div class="n">29 → 1.3</div><div class="l">median days to merge a bot PR, Dec → Sep</div></div>
+  </div>
+  <p class="foot">Palo Otčenáš · Senior Staff Engineer, Outreach · ← → or scroll</p>
+</section>
+
+<section id="s2">
+  <p class="k">01 · The problem</p>
+  <h2>Deleting a flag is a judgement call, not a parse.</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Only 1 in 5 flags is safe</h3>
+      <p>Dec 2025: 3,274 flags, <b>639</b> safe to delete. Why the rest are not (a flag can fail several checks):</p>
+      <div class="bar"><span>still rolling out</span><i style="width:100%"></i><span>2,338</span></div>
+      <div class="bar"><span>multivariate</span><i style="width:23%"></i><span>549</span></div>
+      <div class="bar"><span>has prerequisites</span><i style="width:20%"></i><span>464</span></div>
+      <div class="bar"><span>is a prerequisite</span><i style="width:6%"></i><span>144</span></div>
+      <div class="bar"><span>safe</span><i class="y" style="width:27%"></i><span>639</span></div>
+    </div>
+    <div class="card">
+      <h3>One flag is five artefacts</h3>
+      <ul>
+        <li>a React hook call</li>
+        <li>an enum in a capability registry</li>
+        <li>a GraphQL <code>@include(if:)</code> directive</li>
+        <li>translation keys × 8 locales</li>
+        <li>a Terraform resource</li>
+      </ul>
+      <p style="margin-top:12px">Plus tests, dead components, now-unused imports.</p>
+    </div>
+    <div class="card">
+      <h3>Prior art: Uber Piranha</h3>
+      <p>AST rewriting, a separate plugin per language, boolean flag APIs only. ~1,381 flags removed over 18 months. 65% of its PRs merged without changes.</p>
+      <p>Excellent — and it can't see a GraphQL directive or a translation key.</p>
+    </div>
+  </div>
+</section>
+
+<section id="s3">
+  <p class="k">02 · Architecture</p>
+  <h2>Code before, code after, AI in the middle.</h2>
+  <div class="flow">
+    <div>Trigger<small>cron · dispatch · webhook</small></div>
+    <div>Discover<small>LaunchDarkly API</small></div>
+    <div>Pre-checks<small>code</small></div>
+    <div class="ai">Agent<small>prompt + allowlist</small></div>
+    <div>Post-process<small>code</small></div>
+    <div>Output<small>PR · Jira · Slack</small></div>
+  </div>
+  <div class="grid">
+    <div class="card"><h3>Stack</h3><p>GitHub Actions: 22 workflows, 27 composite actions. TypeScript scripts (~16k lines + ~9k tests). One matrix job per flag.</p></div>
+    <div class="card"><h3>Provider-agnostic</h3><p>One repo variable: <code>AI_AGENT_PROVIDER</code> = <code>rovo</code> | <code>copilot</code> | <code>claude</code>. Same prompts, same contracts. Switched providers in 2026 without touching a prompt.</p></div>
+    <div class="card"><h3>The rule</h3><p>Anything that can be decided by code is decided by code. The model only does what needs judgement: editing the right lines in the right files.</p></div>
+  </div>
+</section>
+
+<section id="s4">
+  <p class="k">03 · What is in each box</p>
+  <h2>Four out of five flags never reach the AI.</h2>
+  <div class="grid">
+    <div class="card"><span class="tag">before · code</span><ul>
+      <li>100% on in staging and production for 14+ days</li>
+      <li>boolean; no prerequisites; no dependents; not tagged <code>ignore-cleanup-bot</code></li>
+      <li>no existing ticket or open PR (dedupe)</li>
+      <li>owner resolved from git history → ticket routed to that team</li>
+      <li>throttle: max 5 PRs per team per week</li></ul></div>
+    <div class="card ai"><span class="tag">agent</span><ul>
+      <li>one markdown prompt per repo type (frontend, Go, Node, Ruby…)</li>
+      <li>tool allowlist: file tools + 34 shell commands, default deny</li>
+      <li><code>git commit</code> / <code>git push</code> explicitly disallowed</li>
+      <li>10-minute budget, no questions — nobody is there to answer</li>
+      <li>folder deletions via a file contract, executed by the pipeline</li></ul></div>
+    <div class="card"><span class="tag">after · code</span><ul>
+      <li>if HEAD moved, <code>git reset --mixed</code> — the agent's commit is undone</li>
+      <li>GraphQL type generation, lint-staged (lint + format)</li>
+      <li>pipeline commits, opens the PR + Jira ticket, posts to Slack</li>
+      <li>repo CI runs the tests like any human PR</li>
+      <li>the owning team reviews and merges — never the bot</li></ul></div>
+  </div>
+</section>
+
+<section id="s5">
+  <p class="k">04 · The agent step</p>
+  <h2>The whole agent invocation fits on a screen.</h2>
+<pre><span class="c"># tools: file edits + an allowlist read from a text file</span>
+ALLOWED_TOOLS="Read,Glob,Grep,Edit,Write,TodoWrite,Task"
+while read -r cmd; do ALLOWED_TOOLS+=",Bash(${cmd}:*)"; done &lt; agent-allowed-commands.txt
+
+ORIG_HEAD=$(git rev-parse HEAD)
+<span class="h">claude -p</span> "$PROMPT" \
+  <span class="a">--permission-mode</span> acceptEdits \
+  <span class="a">--allowedTools</span> "$ALLOWED_TOOLS" \
+  <span class="a">--disallowedTools</span> "Bash(git push:*),Bash(git commit:*)" \
+  <span class="a">--append-system-prompt</span> "$(cat agent-ci-instructions.md)" \
+  <span class="a">--model</span> sonnet <span class="a">--output-format</span> stream-json &gt; stream.jsonl
+
+<span class="c"># it committed anyway? keep the changes, drop the commit</span>
+[ "$(git rev-parse HEAD)" != "$ORIG_HEAD" ] &amp;&amp; git reset --mixed "$ORIG_HEAD"
+
+<span class="c"># success = the result event, not the exit code (crashes exited 0)</span>
+jq -c 'select(.type=="result")' stream.jsonl | tail -1</pre>
+  <p class="foot">Excerpt, simplified. The Copilot and Rovo actions follow the same contract.</p>
+</section>
+
+<section id="s6">
+  <p class="k">05 · The feedback loop</p>
+  <h2>Every review comment becomes a rule.</h2>
+  <div class="grid">
+    <div class="card"><h3>1 · Ask for it</h3><p>Every bot PR opens with: <i>"Please comment on anything the AI forgot to clean up or messed up. Your input directly improves the prompt."</i></p></div>
+    <div class="card"><h3>2 · Write it down</h3><p>Comments go into a pattern library mined from merged PRs, then into the prompt. Prompt: <b>19 lines → 771 lines</b>, 44 revisions. Most edits cite the PR that caused them.</p></div>
+    <div class="card"><h3>3 · Measure it</h3><p>Flag-code PRs merged with zero human commits: <b class="bad">29%</b> in Dec 2025 → <b class="ok">83%</b> in Sep 2026. All lanes: 65.5% (Piranha: 65%).</p></div>
+  </div>
+  <p class="foot" style="margin-top:22px">Confounders: provider switch (Jun 2026) and a newer default model (Jul 2026) landed in the same window.</p>
+</section>
+
+<section id="s7">
+  <p class="k">06 · Failure modes</p>
+  <h2>None of the worst bugs were "the AI wrote bad code".</h2>
+  <table>
+    <tr><th>What happened</th><th>Fix</th></tr>
+    <tr><td>Agent crashed, exited 0</td><td>judge success from the result event; resume crashed sessions instead of keeping half an edit</td></tr>
+    <tr><td>Agent committed despite instructions</td><td>disallow the tool <i>and</i> reset if HEAD moved</td></tr>
+    <tr><td><code>git add --force</code> staged <code>node_modules</code>: 213k files in one commit</td><td>prompt rule + unstage guard before lint-staged</td></tr>
+    <tr><td>Agent OOM-killed the runner</td><td>cap Node heap at 4 GB</td></tr>
+    <tr><td>Flag names interpolated into <code>run:</code> blocks</td><td>all untrusted values through <code>env:</code> — flag names are user input</td></tr>
+    <tr><td>Vendor changed its credit model; one run ate a month's quota</td><td>provider abstraction, budget check before each run</td></tr>
+    <tr><td>GitHub masked flag JSON as a secret; API rate limits</td><td>artifact hand-off between jobs; paced API calls</td></tr>
+  </table>
+</section>
+
+<section id="s8">
+  <p class="k">07 · Adoption</p>
+  <h2>Perfect PRs still waited 29 days.</h2>
+  <div class="grid">
+    <div class="card"><h3>The problem was attention</h3><p>Dec 2025: small, green, correct PRs, median <b>29 days</b> to merge. First weekly report: <b>0</b> flags cleaned.</p></div>
+    <div class="card"><h3>What fixed it</h3><ul>
+      <li>weekly Slack report: per-team leaderboard and oldest open PRs</li>
+      <li>every PR routed to the owning team with a ticket</li>
+      <li>per-team throttle so nobody gets flooded</li>
+      <li>a mascot — a bot with a face gets reviewed</li></ul></div>
+    <div class="card"><h3>Result</h3><p>Median days to merge, by month: Dec 29 · Jan 12.4 · Mar 6.4 · May 2.9 · Aug 2.2 · <b class="ok">Sep 1.3</b>.</p></div>
+  </div>
+</section>
+
+<section id="s9">
+  <p class="k">08 · From tool to platform</p>
+  <h2>Same six steps. Different markdown file.</h2>
+  <table>
+    <tr><th>Lane</th><th>Status</th><th>What changes</th></tr>
+    <tr><td>Feature-flag code removal</td><td class="ok">shipped</td><td>the original prompt</td></tr>
+    <tr><td>Terraform: delete deprecated flag resources</td><td class="ok">shipped</td><td>191 PRs merged, median 1.9 days</td></tr>
+    <tr><td>Modal dialog → controller migration</td><td class="ok">shipped</td><td>built by another engineer: 36-line prompt + a skill file, 118 PRs merged</td></tr>
+    <tr><td>GraphQL field decommissioning</td><td class="ok">shipped</td><td>new discovery step, same pipeline</td></tr>
+    <tr><td>First responder on a page</td><td class="brand">in progress</td><td>what changed in the last hour: PRs, flag flips, deploys</td></tr>
+    <tr><td>Security vulnerability triage</td><td>next</td><td>—</td></tr>
+  </table>
+</section>
+
+<section id="s10">
+  <p class="k">09 · Start tomorrow</p>
+  <h2>Pick something boring, repetitive and easy to verify.</h2>
+  <div class="grid">
+    <div class="card"><span class="tag">cheapest</span><h3>GitHub Agentic Workflows</h3><p>A markdown file in <code>.github/workflows/</code>. GitHub runs the agent and opens the PR. <a href="https://github.github.com/gh-aw/">github.github.com/gh-aw</a></p></div>
+    <div class="card"><span class="tag">middle</span><h3>Your workflow + an agent CLI</h3><p>A prompt, ~50 lines of YAML, Claude Code or Copilot CLI with an allowlist — slide 05 is most of it.</p></div>
+    <div class="card"><span class="tag">only if needed</span><h3>A full pipeline</h3><p>When "is it safe to touch?" needs several APIs and a dependency graph. Ours: ~25k lines of TypeScript, ~11k lines of YAML.</p></div>
+  </div>
+  <div class="card" style="margin-top:18px"><h3>Five rules</h3><ul>
+    <li><b>Code before and after, AI in the middle.</b> Gates and verification are deterministic.</li>
+    <li><b>AI never commits, AI never merges.</b> Enforce it in tooling, not in the prompt.</li>
+    <li><b>Every review comment becomes a rule.</b> Ask for it in the PR body.</li>
+    <li><b>Every PR has an owner.</b> Route it to the team, throttle it.</li>
+    <li><b>Give it a face.</b> Adoption is the hard part.</li></ul></div>
+  <p class="foot">Prior art: <a href="https://manu.sridharan.net/files/ICSE20-SEIP-Piranha.pdf">Piranha, ICSE-SEIP 2020</a> · <a href="https://github.com/uber/piranha">github.com/uber/piranha</a></p>
+</section>
+
+<div class="nav" id="nav">1 / 10</div>
+<script>
+const S=[...document.querySelectorAll('section')],nav=document.getElementById('nav');
+let cur=0;
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting&&e.intersectionRatio>.5){cur=S.indexOf(e.target);nav.textContent=(cur+1)+' / '+S.length}}),{threshold:[.5]});
+S.forEach(s=>io.observe(s));
+addEventListener('keydown',e=>{
+  const n=['ArrowRight','ArrowDown','PageDown',' '].includes(e.key)?1:['ArrowLeft','ArrowUp','PageUp'].includes(e.key)?-1:0;
+  if(!n)return; e.preventDefault(); cur=Math.max(0,Math.min(S.length-1,cur+n)); S[cur].scrollIntoView();
+});
+</script>
+</body>
+</html>
